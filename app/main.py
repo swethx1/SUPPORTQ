@@ -1,6 +1,7 @@
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -18,18 +19,30 @@ from app.llm import generate_answer
 from app.document_processor import extract_text_from_pdf
 
 
+# Initialize the knowledge base when the API starts.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    index_faqs()
+    yield
+
+
+# Create the FastAPI application.
 app = FastAPI(
     title="SupportIQ API",
     description="Document-based AI customer support using RAG and Groq",
     version="0.4.0",
+    lifespan=lifespan,
 )
 
+
+# Project paths and upload settings.
 BASE_DIR = Path(__file__).resolve().parent.parent
 FAQ_FILE = BASE_DIR / "data" / "faqs.json"
 
 MAX_PDF_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
+# Request models.
 class ChatRequest(BaseModel):
     question: str
 
@@ -39,11 +52,13 @@ class DocumentQuestion(BaseModel):
     question: str
 
 
+# Load FAQs from the JSON file.
 def load_faqs():
     with FAQ_FILE.open("r", encoding="utf-8") as file:
         return json.load(file)
 
 
+# Home endpoint.
 @app.get("/")
 def home():
     return {
@@ -52,17 +67,23 @@ def home():
     }
 
 
+# Health check endpoint.
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
 
 
+# Return all FAQs.
 @app.get("/faqs")
 def get_faqs():
     faqs = load_faqs()
-    return {"count": len(faqs), "faqs": faqs}
+    return {
+        "count": len(faqs),
+        "faqs": faqs,
+    }
 
 
+# Search FAQs using keywords.
 @app.get("/search")
 def search_faqs(q: str = Query(..., min_length=1)):
     faqs = load_faqs()
@@ -84,11 +105,7 @@ def search_faqs(q: str = Query(..., min_length=1)):
     }
 
 
-@app.on_event("startup")
-def initialize_knowledge_base():
-    index_faqs()
-
-
+# Search FAQs using semantic similarity.
 @app.get("/search-semantic")
 def semantic_search(
     q: str = Query(..., min_length=1),
@@ -103,6 +120,7 @@ def semantic_search(
     }
 
 
+# Chat using FAQ context and the LLM.
 @app.post("/chat")
 def chat(request: ChatRequest):
     question = request.question.strip()
@@ -151,10 +169,14 @@ def chat(request: ChatRequest):
         )
         raise HTTPException(
             status_code=502,
-            detail="Chat generation failed. Check the VS Code terminal.",
+            detail=(
+                "Chat generation failed. "
+                "Check the VS Code terminal."
+            ),
         ) from exc
 
 
+# Upload, extract, and index a PDF.
 @app.post("/upload-document")
 async def upload_document(file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
@@ -198,10 +220,10 @@ async def upload_document(file: UploadFile = File(...)):
                 ),
             )
 
-        # Create a unique ID for this uploaded document.
+        # Give this upload a unique document ID.
         document_id = str(uuid.uuid4())
 
-        # Split the PDF text into searchable chunks.
+        # Split the extracted text into chunks.
         chunks = chunk_document_text(extracted_text)
 
         if not chunks:
@@ -210,7 +232,7 @@ async def upload_document(file: UploadFile = File(...)):
                 detail="No searchable text chunks could be created.",
             )
 
-        # Store the chunks and embeddings in ChromaDB.
+        # Save the chunks and embeddings in ChromaDB.
         chunk_count = index_document_chunks(document_id, chunks)
 
         return {
@@ -234,7 +256,10 @@ async def upload_document(file: UploadFile = File(...)):
         )
         raise HTTPException(
             status_code=500,
-            detail="Document processing failed. Check the server terminal.",
+            detail=(
+                "Document processing failed. "
+                "Check the server terminal."
+            ),
         ) from exc
 
     finally:
@@ -244,6 +269,7 @@ async def upload_document(file: UploadFile = File(...)):
         await file.close()
 
 
+# Ask a question about one specific uploaded document.
 @app.post("/ask-document")
 def ask_document(request: DocumentQuestion):
     document_id = request.document_id.strip()
@@ -256,7 +282,7 @@ def ask_document(request: DocumentQuestion):
         )
 
     try:
-        # Search only the selected document's indexed chunks.
+        # Retrieve chunks belonging only to this document.
         matches = search_document_chunks(
             document_id=document_id,
             query=question,
@@ -303,5 +329,8 @@ def ask_document(request: DocumentQuestion):
         )
         raise HTTPException(
             status_code=502,
-            detail="Document question failed. Check the server terminal.",
+            detail=(
+                "Document question failed. "
+                "Check the server terminal."
+            ),
         ) from exc
