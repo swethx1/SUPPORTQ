@@ -1,0 +1,22 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local vector database
+chroma_db/
+
+# Uploaded documents and logs
+*.pdf
+*.log
+
+# Local editor settings
+.vscode/
+
+# Local Streamlit settings
+.streamlit/

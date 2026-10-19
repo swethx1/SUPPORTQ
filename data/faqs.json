@@ -1,0 +1,33 @@
+
+[
+  {
+    "id": 1,
+    "category": "shipping",
+    "question": "How long does shipping take?",
+    "answer": "Standard shipping takes 3 to 5 business days. Express shipping takes 1 to 2 business days."
+  },
+  {
+    "id": 2,
+    "category": "returns",
+    "question": "Can I return a product?",
+    "answer": "Products can be returned within 30 days of delivery if they are unused and in their original packaging."
+  },
+  {
+    "id": 3,
+    "category": "refunds",
+    "question": "How long do refunds take?",
+    "answer": "Approved refunds are processed within 5 to 7 business days. The time for the money to appear may depend on your payment provider."
+  },
+  {
+    "id": 4,
+    "category": "cancellation",
+    "question": "Can I cancel my order?",
+    "answer": "Orders can be cancelled before they are dispatched. Contact customer support if your order has already been dispatched."
+  },
+  {
+    "id": 5,
+    "category": "payments",
+    "question": "What payment methods are accepted?",
+    "answer": "We accept credit cards, debit cards, and UPI payments."
+  }
+]
