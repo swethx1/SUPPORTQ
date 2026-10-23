@@ -1,4 +1,4 @@
-# SupportIQ - AI-Powered Document Support Assistant
+# SupportQ - AI-Powered Document Support Assistant
 
 SupportIQ is an AI-powered document question-answering system that helps users find information from uploaded documents using Retrieval-Augmented Generation (RAG).
 
