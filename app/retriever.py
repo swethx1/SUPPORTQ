@@ -15,15 +15,20 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 FAQ_FILE = BASE_DIR / "data" / "faqs.json"
 DB_DIR = BASE_DIR / "chroma_db"
 
-# Converts text into numerical embeddings.
+# Convert text into numerical embeddings.
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# Stores data persistently on this computer.
+# Store vectors persistently on this computer.
 client = chromadb.PersistentClient(path=str(DB_DIR))
+
+# Cosine distance ranges from 0 (identical direction)
+# to 2 (opposite direction).
+# This is an initial threshold to reduce irrelevant results.
+MAX_DOCUMENT_DISTANCE = 2.0
 
 
 # --------------------------------------------------
-# 2. Existing FAQ collection
+# 2. FAQ collection
 # --------------------------------------------------
 
 faq_collection = client.get_or_create_collection(
@@ -33,7 +38,7 @@ faq_collection = client.get_or_create_collection(
 
 
 # --------------------------------------------------
-# 3. New collection for uploaded documents
+# 3. Uploaded document collection
 # --------------------------------------------------
 
 document_collection = client.get_or_create_collection(
@@ -43,14 +48,17 @@ document_collection = client.get_or_create_collection(
 
 
 # --------------------------------------------------
-# 4. Existing FAQ indexing
+# 4. FAQ indexing
 # --------------------------------------------------
 
 def index_faqs():
-    """Load FAQs and store their embeddings in ChromaDB."""
+    """Load FAQs and store their embeddings."""
 
     with FAQ_FILE.open("r", encoding="utf-8") as file:
         faqs = json.load(file)
+
+    if not faqs:
+        return 0
 
     documents = [
         f"Question: {faq['question']} Answer: {faq['answer']}"
@@ -58,13 +66,8 @@ def index_faqs():
     ]
 
     ids = [str(faq["id"]) for faq in faqs]
-
-    if not documents:
-        return 0
-
     embeddings = model.encode(documents).tolist()
 
-    # Replace existing FAQ entries safely.
     faq_collection.upsert(
         ids=ids,
         documents=documents,
@@ -82,13 +85,13 @@ def index_faqs():
 
 
 # --------------------------------------------------
-# 5. Existing FAQ search
+# 5. FAQ semantic search
 # --------------------------------------------------
 
 def search_similar_faqs(query: str, limit: int = 3):
-    """Find FAQs whose meanings are closest to the query."""
+    """Find FAQs closest in meaning to the query."""
 
-    if limit < 1:
+    if not query.strip() or limit < 1:
         return []
 
     total = faq_collection.count()
@@ -101,6 +104,7 @@ def search_similar_faqs(query: str, limit: int = 3):
     results = faq_collection.query(
         query_embeddings=[query_embedding],
         n_results=min(limit, total),
+        include=["documents", "metadatas", "distances"],
     )
 
     matches = []
@@ -108,17 +112,18 @@ def search_similar_faqs(query: str, limit: int = 3):
     if not results["ids"] or not results["ids"][0]:
         return matches
 
-    for i, faq_id in enumerate(results["ids"][0]):
-        metadata = results["metadatas"][0][i]
-        distance = results["distances"][0][i]
+    for index, faq_id in enumerate(results["ids"][0]):
+        metadata = results["metadatas"][0][index]
 
         matches.append(
             {
                 "id": int(faq_id),
                 "category": metadata["category"],
                 "question": metadata["question"],
-                "content": results["documents"][0][i],
-                "distance": round(distance, 4),
+                "content": results["documents"][0][index],
+                "distance": round(
+                    results["distances"][0][index], 4
+                ),
             }
         )
 
@@ -126,7 +131,7 @@ def search_similar_faqs(query: str, limit: int = 3):
 
 
 # --------------------------------------------------
-# 6. Split an uploaded document into chunks
+# 6. Split PDF text into page-aware chunks
 # --------------------------------------------------
 
 def chunk_document_text(
@@ -134,12 +139,7 @@ def chunk_document_text(
     chunk_size: int = 1000,
     overlap: int = 150,
 ):
-    """
-    Split extracted PDF text into smaller pieces.
-
-    Keep the page number with each chunk so that
-    answers can identify their source page.
-    """
+    """Split extracted text into chunks while preserving page numbers."""
 
     if chunk_size < 1:
         raise ValueError("chunk_size must be positive.")
@@ -149,14 +149,16 @@ def chunk_document_text(
             "overlap must be non-negative and smaller than chunk_size."
         )
 
-    # document_processor.py adds markers such as [Page 1].
+    if not extracted_text or not extracted_text.strip():
+        return []
+
     page_pattern = r"\[Page (\d+)\]\s*"
     parts = re.split(page_pattern, extracted_text)
 
     chunks = []
     step = chunk_size - overlap
 
-    # The split produces alternating text and page numbers.
+    # Page markers produce alternating page numbers and page text.
     for index in range(1, len(parts), 2):
         page_number = int(parts[index])
         page_text = parts[index + 1].strip()
@@ -183,8 +185,8 @@ def chunk_document_text(
 
             start += step
 
-    # Handle text without page markers, if any.
-    if not chunks and extracted_text.strip():
+    # Fallback for text without page markers.
+    if not chunks:
         text = extracted_text.strip()
         start = 0
 
@@ -213,32 +215,25 @@ def chunk_document_text(
 # --------------------------------------------------
 
 def index_document_chunks(document_id: str, chunks: list):
-    """
-    Store a document's chunks in the document collection.
+    """Store chunks tagged with the document ID and page number."""
 
-    Each chunk is tagged with its document ID and page.
-    """
-
-    if not document_id.strip():
+    if not document_id or not document_id.strip():
         raise ValueError("Document ID cannot be empty.")
 
     if not chunks:
         raise ValueError("No document chunks were provided.")
 
-    contents = [
-        chunk["content"]
+    valid_chunks = [
+        chunk
         for chunk in chunks
         if chunk.get("content", "").strip()
     ]
 
-    pages = [
-        int(chunk["page"])
-        for chunk in chunks
-        if chunk.get("content", "").strip()
-    ]
-
-    if not contents:
+    if not valid_chunks:
         raise ValueError("No readable document text was provided.")
+
+    contents = [chunk["content"] for chunk in valid_chunks]
+    pages = [int(chunk["page"]) for chunk in valid_chunks]
 
     embeddings = model.encode(contents).tolist()
 
@@ -256,9 +251,9 @@ def index_document_chunks(document_id: str, chunks: list):
         for index, page in enumerate(pages)
     ]
 
-    # Re-indexing the same document ID replaces its chunks.
+    # Remove previous chunks if the same document ID is re-indexed.
     existing = document_collection.get(
-        where={"document_id": document_id}
+        where={"document_id": document_id},
     )
 
     if existing["ids"]:
@@ -284,16 +279,19 @@ def search_document_chunks(
     limit: int = 4,
 ):
     """
-    Find relevant passages from the selected document only.
+    Retrieve relevant passages from one document only.
+
+    Passages above MAX_DOCUMENT_DISTANCE are rejected.
+    Lower cosine distances indicate closer embeddings.
     """
 
-    if not document_id.strip():
+    if not document_id or not document_id.strip():
         return []
 
-    if not query.strip() or limit < 1:
+    if not query or not query.strip() or limit < 1:
         return []
 
-    # First check whether this document exists.
+    # Check that the selected document exists.
     existing = document_collection.get(
         where={"document_id": document_id},
         include=["metadatas"],
@@ -302,12 +300,13 @@ def search_document_chunks(
     if not existing["ids"]:
         return []
 
-    query_embedding = model.encode(query).tolist()
+    query_embedding = model.encode(query.strip()).tolist()
 
     results = document_collection.query(
         query_embeddings=[query_embedding],
         n_results=min(limit, len(existing["ids"])),
         where={"document_id": document_id},
+        include=["documents", "metadatas", "distances"],
     )
 
     matches = []
@@ -317,6 +316,11 @@ def search_document_chunks(
 
     for index, chunk_id in enumerate(results["ids"][0]):
         metadata = results["metadatas"][0][index]
+        distance = float(results["distances"][0][index])
+
+        # Do not return passages that are too dissimilar.
+        if distance > MAX_DOCUMENT_DISTANCE:
+            continue
 
         matches.append(
             {
@@ -325,10 +329,7 @@ def search_document_chunks(
                 "page": metadata["page"],
                 "chunk_index": metadata["chunk_index"],
                 "content": results["documents"][0][index],
-                "distance": round(
-                    results["distances"][0][index],
-                    4,
-                ),
+                "distance": round(distance, 4),
             }
         )
 
@@ -340,10 +341,13 @@ def search_document_chunks(
 # --------------------------------------------------
 
 def delete_document(document_id: str):
-    """Remove all indexed chunks belonging to one document."""
+    """Remove all chunks belonging to one document."""
+
+    if not document_id or not document_id.strip():
+        return 0
 
     existing = document_collection.get(
-        where={"document_id": document_id}
+        where={"document_id": document_id},
     )
 
     if existing["ids"]:

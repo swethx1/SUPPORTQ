@@ -1,6 +1,9 @@
 
+import re
+
 import requests
 import streamlit as st
+
 
 # --------------------------------------------------
 # Configuration
@@ -15,6 +18,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
 
 # --------------------------------------------------
 # Session state
@@ -40,7 +44,6 @@ for key, value in DEFAULTS.items():
 st.markdown(
     """
     <style>
-    /* Overall page */
     .stApp {
         background: #10141C;
     }
@@ -49,7 +52,7 @@ st.markdown(
         max-width: 1050px;
         padding-top: 2.5rem;
         padding-bottom: 2rem;
-}
+    }
 
     .brand {
         display: flex;
@@ -58,7 +61,7 @@ st.markdown(
         margin-top: 0.5rem;
         margin-bottom: 1.2rem;
         padding: 6px 0;
-}
+    }
 
     .brand-icon {
         display: flex;
@@ -85,7 +88,6 @@ st.markdown(
         margin-top: 2px;
     }
 
-    /* Document status panel */
     .document-panel {
         background: #191F2B;
         border: 1px solid #2B3547;
@@ -105,7 +107,6 @@ st.markdown(
         overflow-wrap: anywhere;
     }
 
-    /* Intro panel */
     .welcome {
         background: linear-gradient(
             135deg,
@@ -132,7 +133,6 @@ st.markdown(
         margin-bottom: 0;
     }
 
-    /* Buttons */
     .stButton > button {
         border-radius: 10px;
         min-height: 42px;
@@ -144,7 +144,6 @@ st.markdown(
         border-color: #7896C8;
     }
 
-    /* Chat bubbles */
     [data-testid="stChatMessage"] {
         border: 1px solid #263143;
         border-radius: 15px;
@@ -152,12 +151,10 @@ st.markdown(
         background: #151B25;
     }
 
-    /* Chat input */
     [data-testid="stChatInput"] {
         border-color: #34445D;
     }
 
-    /* Upload area */
     [data-testid="stFileUploader"] {
         background: #151B25;
         border: 1px dashed #40516B;
@@ -165,14 +162,21 @@ st.markdown(
         padding: 10px;
     }
 
-    /* Expandable source sections */
     [data-testid="stExpander"] {
         background: #151B25;
         border: 1px solid #2B3547;
         border-radius: 12px;
     }
 
-    /* Small footer */
+    /* Keep source passages readable and naturally wrapped. */
+    .source-text {
+        font-size: 0.95rem;
+        line-height: 1.75;
+        overflow-wrap: anywhere;
+        word-break: normal;
+        white-space: normal;
+    }
+
     .footer {
         text-align: center;
         color: #718098;
@@ -180,7 +184,6 @@ st.markdown(
         padding-top: 22px;
     }
 
-    /* Hide the default Streamlit decoration */
     #MainMenu {
         visibility: hidden;
     }
@@ -199,7 +202,7 @@ st.markdown(
 # --------------------------------------------------
 
 def clear_active_document():
-    """Clear the active document and its visible conversation."""
+    """Clear the active document and its conversation."""
     st.session_state.document_id = None
     st.session_state.document_name = None
     st.session_state.messages = []
@@ -208,7 +211,7 @@ def clear_active_document():
 
 
 def upload_pdf(uploaded_file):
-    """Send the selected PDF to the existing FastAPI endpoint."""
+    """Send the selected PDF to FastAPI."""
     response = requests.post(
         f"{API_URL}/upload-document",
         files={
@@ -238,8 +241,19 @@ def ask_question(document_id, question):
     return response.json()
 
 
+def format_source_text(content):
+    """Normalize whitespace in extracted PDF text."""
+    if not content:
+        return ""
+
+    # Replace newlines, tabs, and repeated whitespace with spaces.
+    content = re.sub(r"\s+", " ", content).strip()
+
+    return content
+
+
 def display_sources(sources):
-    """Display the retrieved passages used to support an answer."""
+    """Display retrieved passages in a readable format."""
     if not sources:
         return
 
@@ -249,17 +263,30 @@ def display_sources(sources):
     ):
         for index, source in enumerate(sources, start=1):
             page = source.get("page", "?")
-            content = source.get("content", "")
+            content = format_source_text(
+                source.get("content", "")
+            )
 
-            st.markdown(f"**Source {index} · Page {page}**")
-            st.write(content)
+            st.markdown(
+                f"**Source {index} · Page {page}**"
+            )
+
+            if content:
+                st.markdown(
+                    f'<div class="source-text">{content}</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption(
+                    "No readable text was returned for this passage."
+                )
 
             if index < len(sources):
                 st.divider()
 
 
 def display_message(message):
-    """Render a saved message and any sources attached to it."""
+    """Render a saved message and its sources."""
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
@@ -268,13 +295,18 @@ def display_message(message):
 
 
 def error_details(error):
-    """Extract a readable API error when one is available."""
-    if isinstance(error, requests.HTTPError) and error.response is not None:
+    """Extract a readable API error."""
+    if (
+        isinstance(error, requests.HTTPError)
+        and error.response is not None
+    ):
         try:
             data = error.response.json()
             detail = data.get("detail")
+
             if detail:
                 return str(detail)
+
         except ValueError:
             pass
 
@@ -304,11 +336,14 @@ st.divider()
 
 
 # --------------------------------------------------
-# Compact document controls
+# Document controls
 # --------------------------------------------------
 
 with st.container():
-    left, right = st.columns([5, 2], vertical_alignment="center")
+    left, right = st.columns(
+        [5, 2],
+        vertical_alignment="center",
+    )
 
     with left:
         st.markdown("#### Your document")
@@ -389,7 +424,9 @@ if not st.session_state.document_id:
                 st.rerun()
 
             except requests.RequestException as error:
-                st.session_state.upload_error = error_details(error)
+                st.session_state.upload_error = error_details(
+                    error
+                )
 
     if st.session_state.upload_error:
         st.error("We couldn't process this document.")
@@ -404,7 +441,6 @@ if not st.session_state.document_id:
         unsafe_allow_html=True,
     )
 
-    # Do not show the chat until a document has been processed.
     st.stop()
 
 
@@ -413,12 +449,14 @@ if not st.session_state.document_id:
 # --------------------------------------------------
 
 st.markdown("#### Conversation")
+
 st.caption(
     "Ask naturally. SupportIQ searches your active document "
     "and shows supporting passages when available."
 )
 
-# Suggested prompts for first-time users.
+
+# Suggested questions for a new conversation.
 if not st.session_state.messages:
     st.markdown("**Not sure where to start?**")
 
@@ -446,17 +484,25 @@ for saved_message in st.session_state.messages:
     display_message(saved_message)
 
 
-# Retrieve a suggestion selected above, or accept normal chat input.
-pending_question = st.session_state.pop("pending_question", None)
+# Handle a suggested question or normal chat input.
+pending_question = st.session_state.pop(
+    "pending_question",
+    None,
+)
+
 typed_question = st.chat_input(
     "Ask a question about your document..."
 )
 
 question = pending_question or typed_question
 
+
 if question:
     st.session_state.messages.append(
-        {"role": "user", "content": question}
+        {
+            "role": "user",
+            "content": question,
+        }
     )
 
     with st.chat_message("user"):
@@ -464,7 +510,9 @@ if question:
 
     try:
         with st.chat_message("assistant"):
-            with st.spinner("Finding the relevant passages..."):
+            with st.spinner(
+                "Finding the relevant passages..."
+            ):
                 result = ask_question(
                     st.session_state.document_id,
                     question,
@@ -474,6 +522,7 @@ if question:
                 "answer",
                 "No answer was returned by the assistant.",
             )
+
             sources = result.get("sources", [])
 
             st.markdown(answer)
@@ -489,9 +538,10 @@ if question:
 
     except requests.RequestException as error:
         details = error_details(error)
+
         friendly_error = (
-            "I couldn't retrieve an answer. Please check the backend "
-            "and try again."
+            "I couldn't retrieve an answer. Please check "
+            "the backend and try again."
         )
 
         with st.chat_message("assistant"):
@@ -508,7 +558,10 @@ if question:
         )
 
 
+# --------------------------------------------------
 # Footer
+# --------------------------------------------------
+
 st.markdown(
     """
     <div class="footer">
